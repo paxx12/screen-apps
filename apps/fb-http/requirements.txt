@@ -1,1 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-PackageHomePage: https://github.com/paxx12/screen-apps
+# SPDX-FileCopyrightText: Copyright (c) 2026 @paxx12
+
 Pillow>=10.0.0

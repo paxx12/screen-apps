@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-PackageHomePage: https://github.com/paxx12/screen-apps
+# SPDX-FileCopyrightText: Copyright (c) 2026 @paxx12
+
 APPS = fb-http
 APPS_DIR = apps
 

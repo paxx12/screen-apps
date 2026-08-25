@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-PackageHomePage: https://github.com/paxx12/screen-apps
+# SPDX-FileCopyrightText: Copyright (c) 2026 @paxx12
 
 DIR=$(dirname "$0")
 BINDIR="$DIR/usr/local/bin"

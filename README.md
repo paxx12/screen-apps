@@ -9,6 +9,8 @@ Collection of applications for framebuffer and screen interaction on embedded sy
 HTTP server for viewing and interacting with the framebuffer device (`/dev/fb0`). Provides:
 
 - Real-time framebuffer streaming as PNG images via HTTP polling with ETag caching
+- PNG encoder selectable with `--png-encoder`: `zlib` (default, unfiltered rows
+  with zlib level 3) or `pillow` (Pillow PNG, `compress_level=6`)
 - Touch input support via `/dev/input/event0`
 - Web-based interface for remote screen viewing and interaction
 

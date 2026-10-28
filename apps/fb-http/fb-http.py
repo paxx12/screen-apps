@@ -11,6 +11,7 @@ import mmap
 import os
 import struct
 import time
+import zlib
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from io import BytesIO
 from urllib.parse import urlparse, parse_qs
@@ -84,13 +85,38 @@ ABS_MT_TRACKING_ID = 0x39
 ABS_MT_POSITION_X = 0x35
 ABS_MT_POSITION_Y = 0x36
 
+def _png_chunk(tag, data):
+    return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', zlib.crc32(tag + data))
+
+def encode_png_zlib(img, level=3):
+    # Filter type None on every row: Pillow's per-row filter selection costs
+    # more than the deflate itself and compresses flat UI content worse.
+    width, height = img.size
+    stride = width * 3
+    raw = img.tobytes()
+    rows = b''.join(b'\x00' + raw[y * stride:(y + 1) * stride] for y in range(height))
+    ihdr = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
+    return (b'\x89PNG\r\n\x1a\n' + _png_chunk(b'IHDR', ihdr) +
+            _png_chunk(b'IDAT', zlib.compress(rows, level)) + _png_chunk(b'IEND', b''))
+
+def encode_png_pillow(img):
+    buf = BytesIO()
+    img.save(buf, 'PNG', compress_level=6)
+    return buf.getvalue()
+
+PNG_ENCODERS = {
+    'zlib': encode_png_zlib,
+    'pillow': encode_png_pillow,
+}
+
 def log(msg):
     ts = time.strftime('%H:%M:%S')
     print(f"[{ts}] {msg}", flush=True)
 
 class Framebuffer:
-    def __init__(self, device='/dev/fb0'):
+    def __init__(self, device='/dev/fb0', png_encoder='zlib'):
         self.device = device
+        self.encode_png = PNG_ENCODERS[png_encoder]
         self.fd = None
         self.mm = None
         self.width = 0
@@ -136,15 +162,12 @@ class Framebuffer:
         if raw_hash == self._cache_hash and self._cache_png:
             return raw_hash, self._cache_png
         if self.bpp == 32:
-            img = Image.frombytes('RGBA', (self.width, self.height), raw, 'raw', 'BGRA', self.line_length)
-            img = img.convert('RGB')
+            img = Image.frombytes('RGB', (self.width, self.height), raw, 'raw', 'BGRX', self.line_length)
         elif self.bpp == 16:
             img = Image.frombytes('RGB', (self.width, self.height), raw, 'raw', 'BGR;16', self.line_length)
         else:
             img = Image.frombytes('RGB', (self.width, self.height), raw, 'raw', 'BGR', self.line_length)
-        buf = BytesIO()
-        img.save(buf, 'PNG', compress_level=6)
-        png_data = buf.getvalue()
+        png_data = self.encode_png(img)
         self._cache_hash = raw_hash
         self._cache_png = png_data
         return raw_hash, png_data
@@ -344,9 +367,11 @@ def main():
     parser.add_argument('--fb', default='/dev/fb0', help='Framebuffer device')
     parser.add_argument('--touch', default='/dev/input/event0', help='Touch input device')
     parser.add_argument('--html-dir', default=default_html_dir, help='Path to HTML directory')
+    parser.add_argument('--png-encoder', choices=PNG_ENCODERS, default='zlib',
+                        help='PNG encoder: zlib (unfiltered, fast) or pillow (Pillow, compress_level=6)')
     args = parser.parse_args()
 
-    fb = Framebuffer(args.fb)
+    fb = Framebuffer(args.fb, args.png_encoder)
     touch = TouchInput(args.touch, fb.width, fb.height)
 
     ScreenHandler.framebuffer = fb
@@ -356,6 +381,7 @@ def main():
     server = ThreadingHTTPServer((args.bind, args.port), ScreenHandler)
     log(f"Server running on http://{args.bind}:{args.port}")
     log(f"  HTML directory: {args.html_dir}")
+    log(f"  PNG encoder: {args.png_encoder}")
     log(f"  GET  /           - HTML viewer")
     log(f"  GET  /snapshot   - PNG snapshot")
     log(f"  POST /touch?x=&y= - Send touch event")

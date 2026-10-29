@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import mmap
 import os
+import socket
 import struct
 import time
 import zlib
@@ -154,8 +155,7 @@ class Framebuffer:
         fcntl.ioctl(self.fd, FBIOGET_VSCREENINFO, vinfo)
         offset = vinfo.yoffset * self.line_length
 
-        self.mm.seek(offset)
-        raw = self.mm.read(self.line_length * self.height)
+        raw = self.mm[offset:offset + self.line_length * self.height]
         raw_hash = hashlib.md5(raw).hexdigest()[:16]
         if client_etag and client_etag == raw_hash:
             return raw_hash, None
@@ -291,6 +291,8 @@ class ScreenHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == '/snapshot':
             self.handle_snapshot()
+        elif path == '/stream':
+            self.handle_stream()
         else:
             super().do_GET()
 
@@ -321,6 +323,32 @@ class ScreenHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             log(f"Snapshot error: {e}")
             self.send_error(500, str(e))
+
+    def handle_stream(self):
+        # MJPEG-style multipart stream with PNG parts, pushed whenever the screen changes.
+        # multipart/mixed, not x-mixed-replace: WebKit (Safari, every iOS browser) fails a
+        # fetch() of an x-mixed-replace body with "Load failed". The parts are identical.
+        # The last frame is resent after 10s without changes so idle proxies keep the connection.
+        self.send_response(200)
+        self.send_header('Content-Type', 'multipart/mixed; boundary=frame')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('X-Accel-Buffering', 'no')
+        self.end_headers()
+        # Small send buffer so a slow client gets the newest frame, not a backlog.
+        self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32768)
+        etag, last_sent = None, 0
+        try:
+            while True:
+                keepalive = time.monotonic() - last_sent >= 10
+                etag, png_data = self.framebuffer.get_snapshot(None if keepalive else etag)
+                if png_data:
+                    self.wfile.write(b'--frame\r\nContent-Type: image/png\r\nContent-Length: %d\r\n\r\n'
+                                     % len(png_data) + png_data + b'\r\n')
+                    self.wfile.flush()
+                    last_sent = time.monotonic()
+                time.sleep(0.05)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def handle_touch(self, query):
         try:
@@ -384,6 +412,7 @@ def main():
     log(f"  PNG encoder: {args.png_encoder}")
     log(f"  GET  /           - HTML viewer")
     log(f"  GET  /snapshot   - PNG snapshot")
+    log(f"  GET  /stream     - multipart PNG stream, pushed on change")
     log(f"  POST /touch?x=&y= - Send touch event")
 
     try:

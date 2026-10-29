@@ -45,7 +45,15 @@ let loading = false;
 let errorCount = 0;
 let etag = '';
 let frameCount = 0;
-let lastFpsTime = performance.now();
+
+function showFrame(blob) {
+    const oldUrl = img.src;
+    img.src = URL.createObjectURL(blob);
+    if (oldUrl.startsWith('blob:')) URL.revokeObjectURL(oldUrl);
+    frameCount++;
+}
+
+setInterval(() => { status.textContent = frameCount + ' fps'; frameCount = 0; }, 1000);
 
 async function updateImage() {
     if (loading) return;
@@ -60,12 +68,7 @@ async function updateImage() {
         if (resp.status === 200) {
             const newEtag = resp.headers.get('ETag');
             if (newEtag) etag = newEtag;
-            const blob = await resp.blob();
-            const url = URL.createObjectURL(blob);
-            const oldUrl = img.src;
-            img.src = url;
-            if (oldUrl.startsWith('blob:')) URL.revokeObjectURL(oldUrl);
-            frameCount++;
+            showFrame(await resp.blob());
             errorCount = 0;
         } else if (resp.status === 304) {
             etag = resp.headers.get('ETag') || etag;
@@ -80,15 +83,43 @@ async function updateImage() {
         img.src = placeholderImg;
     }
     loading = false;
-    const now = performance.now();
-    if (now - lastFpsTime >= 1000) {
-        status.textContent = frameCount + ' fps';
-        frameCount = 0;
-        lastFpsTime = now;
+}
+
+// Reads the multipart stream with fetch() so the auth header is kept
+// (an <img src="stream"> cannot send it). latin1 maps 1 byte to 1 char,
+// so the match position is the byte offset of the PNG.
+const latin1 = new TextDecoder('latin1');
+const PART = /Content-Length: (\d+)\r\n\r\n/i;
+let streamed = false;
+
+async function stream() {
+    const resp = await fetch('stream', { headers: window.getAuthHeaders ? getAuthHeaders() : {} });
+    if (!resp.ok || !resp.body) throw new Error(resp.status);
+    streamed = true;
+    const reader = resp.body.getReader();
+    let buf = new Uint8Array(0);
+    for (;;) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error('stream closed');
+        const joined = new Uint8Array(buf.length + value.length);
+        joined.set(buf);
+        joined.set(value, buf.length);
+        buf = joined;
+        let m;
+        while ((m = PART.exec(latin1.decode(buf.subarray(0, 128))))) {
+            const start = m.index + m[0].length, end = start + +m[1];
+            if (buf.length < end) break;
+            showFrame(new Blob([buf.subarray(start, end)], { type: 'image/png' }));
+            buf = buf.subarray(end);
+        }
     }
 }
 
-setInterval(updateImage, 100);
+// Push stream when available, reconnect if it drops; poll /snapshot if it never connects.
+function connect() {
+    stream().catch(() => streamed ? setTimeout(connect, 1000) : setInterval(updateImage, 100));
+}
+window.addEventListener('load', connect);
 
 let dragging = false;
 let dragMoved = false;
